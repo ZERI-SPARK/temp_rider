@@ -40,7 +40,7 @@ body {
   background-color: var(--bg-secondary);
   color: var(--text-primary);
   overflow: hidden;
-  height: 100vh;
+  height: 100dvh;
   width: 100vw;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;

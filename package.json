@@ -18,7 +18,9 @@
     "react-dom": "19.2.3",
     "react-leaflet": "^5.0.0",
     "socket.io": "^4.8.3",
-    "socket.io-client": "^4.8.3"
+    "socket.io-client": "^4.8.3",
+    "bufferutil": "^4.0.8",
+    "utf-8-validate": "^6.0.4"
   },
   "devDependencies": {
     "@types/leaflet": "^1.9.21",

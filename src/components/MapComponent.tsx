@@ -62,11 +62,17 @@ export default function MapComponent({ session, onPeersUpdate }: MapComponentPro
     const geoWatchId = useRef<number | null>(null);
 
     useEffect(() => {
-        // Connect to Socket.IO server on the same origin
-        const newSocket = io(window.location.origin);
+        // Connect to Socket.IO server ensuring secure websocket upgrade handling behind Render's proxy
+        const socketUrl = window.location.origin.includes('localhost') ? window.location.origin : window.location.origin.replace('http://', 'https://');
+        const newSocket = io(socketUrl, {
+            transports: ['websocket', 'polling'], // Fallback safely
+            secure: true,
+            rejectUnauthorized: false
+        });
         setSocket(newSocket);
 
         newSocket.on('connect', () => {
+            console.log("Socket connected:", newSocket.id);
             newSocket.emit('join_group', session.groupCode);
         });
 
@@ -262,9 +268,10 @@ export default function MapComponent({ session, onPeersUpdate }: MapComponentPro
         } else if (viewMode === 'leader') {
             if (session.isLeader) return myLoc;
             const leader = Object.values(peers).find(p => p.isLeader);
-            return leader ? [{ lat: leader.lat, lng: leader.lng }] : myLoc;
+            // Must return both My Location AND Leader Location so fitBounds has a box to trace
+            return leader ? [...myLoc, { lat: leader.lat, lng: leader.lng }] : myLoc;
         } else if (viewMode === 'destination') {
-            return destination ? [{ lat: destination.lat, lng: destination.lng }] : myLoc;
+            return destination ? [...myLoc, { lat: destination.lat, lng: destination.lng }] : myLoc;
         }
         return myLoc;
     };
