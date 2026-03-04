@@ -10,6 +10,8 @@ const port = process.env.PORT || 3000;
 const connectedSockets = new Set();
 // Store destination per group: { lat, lng, name }
 const groupDestinations = {};
+// Store navigation state per group: boolean
+const groupNavigationState = {};
 const app = next({ dev, hostname, port: Number(port) });
 const handle = app.getRequestHandler();
 
@@ -48,6 +50,11 @@ app.prepare().then(() => {
       if (groupDestinations[groupId]) {
         socket.emit('destination_updated', groupDestinations[groupId]);
       }
+
+      // If the group is already navigating, sync it
+      if (groupNavigationState[groupId]) {
+        socket.emit('navigation_started', true);
+      }
     });
 
     // Handle location streaming
@@ -70,6 +77,12 @@ app.prepare().then(() => {
       // but typically we broadcast to '.to(groupId)' because sender sets it locally.
       // However, sending to everyone is fine too. We'll use io.to to update all just in case.
       io.to(groupId).emit('destination_updated', data);
+    });
+
+    // Handle start navigation trigger
+    socket.on('start_navigation', (groupId) => {
+      groupNavigationState[groupId] = true;
+      io.to(groupId).emit('navigation_started', true);
     });
 
     socket.on('disconnect', () => {

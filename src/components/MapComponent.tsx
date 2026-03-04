@@ -31,19 +31,24 @@ interface MapComponentProps {
     onPeersUpdate?: (peers: Record<string, RiderData>) => void;
 }
 
-// Map center tracking component
-function RecenterAutomatically({ positions }: { positions: Position[] }) {
+// Google Maps-style navigation camera lock
+function NavigationCamera({ myPosition, isNavigating }: { myPosition: Position | null, isNavigating: boolean }) {
     const map = useMap();
     useEffect(() => {
-        if (positions.length > 0) {
-            if (positions.length === 1) {
-                map.setView([positions[0].lat, positions[0].lng], 16, { animate: true });
-            } else {
-                const bounds = L.latLngBounds(positions.map(p => [p.lat, p.lng]));
-                map.fitBounds(bounds, { padding: [50, 50], animate: true, maxZoom: 18 });
-            }
+        if (isNavigating && myPosition) {
+            // Lock onto the exact position tightly when navigating
+            map.flyTo([myPosition.lat, myPosition.lng], 18, { animate: true, duration: 0.5 });
         }
-    }, [positions, map]);
+    }, [myPosition, isNavigating, map]);
+
+    // Initial center on load if not navigating
+    useEffect(() => {
+        if (!isNavigating && myPosition) {
+            map.setView([myPosition.lat, myPosition.lng], 16, { animate: true });
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []); // Only run once to center user on initial load
+
     return null;
 }
 
@@ -58,6 +63,7 @@ export default function MapComponent({ session, onPeersUpdate }: MapComponentPro
 
     // View state for Riders
     const [viewMode, setViewMode] = useState<'all' | 'leader' | 'destination'>('all');
+    const [isNavigating, setIsNavigating] = useState(false);
 
     const geoWatchId = useRef<number | null>(null);
 
@@ -85,6 +91,10 @@ export default function MapComponent({ session, onPeersUpdate }: MapComponentPro
 
         newSocket.on('destination_updated', (data: { lat: number, lng: number, name: string }) => {
             setDestination(data);
+        });
+
+        newSocket.on('navigation_started', (status: boolean) => {
+            setIsNavigating(status);
         });
 
         return () => {
@@ -237,6 +247,13 @@ export default function MapComponent({ session, onPeersUpdate }: MapComponentPro
         }
     };
 
+    const handleStartNavigation = () => {
+        setIsNavigating(true);
+        if (socket && socket.connected) {
+            socket.emit('start_navigation', session.groupCode);
+        }
+    };
+
     // Simple hash to generate a hex color from a string
     const getColorFromName = (name: string) => {
         let hash = 0;
@@ -261,21 +278,6 @@ export default function MapComponent({ session, onPeersUpdate }: MapComponentPro
         });
     };
 
-    const getPositionsToTrack = () => {
-        const myLoc = myPosition ? [{ lat: myPosition.lat, lng: myPosition.lng }] : [];
-        if (viewMode === 'all') {
-            return [...myLoc, ...Object.values(peers), ...(destination ? [{ lat: destination.lat, lng: destination.lng }] : [])];
-        } else if (viewMode === 'leader') {
-            if (session.isLeader) return myLoc;
-            const leader = Object.values(peers).find(p => p.isLeader);
-            // Must return both My Location AND Leader Location so fitBounds has a box to trace
-            return leader ? [...myLoc, { lat: leader.lat, lng: leader.lng }] : myLoc;
-        } else if (viewMode === 'destination') {
-            return destination ? [...myLoc, { lat: destination.lat, lng: destination.lng }] : myLoc;
-        }
-        return myLoc;
-    };
-
     if (!myPosition) {
         return (
             <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--bg-secondary)', color: 'var(--accent-blue)', flexDirection: 'column', gap: '16px' }}>
@@ -287,16 +289,24 @@ export default function MapComponent({ session, onPeersUpdate }: MapComponentPro
 
     return (
         <div style={{ width: '100%', height: '100%', position: 'relative' }}>
-            {session.isLeader && (
+            {session.isLeader && !isNavigating && (
                 <DestinationSearch onSelectDestination={handleSelectDestination} />
             )}
 
-            {!session.isLeader && destination && (
+            {session.isLeader && destination && !isNavigating && (
+                <div className="top-overlay" style={{ display: 'flex', justifyContent: 'center', pointerEvents: 'none', top: '70px' }}>
+                    <button onClick={handleStartNavigation} className="btn-primary" style={{ pointerEvents: 'auto', width: '250px', boxShadow: '0 4px 20px var(--success-green)' }}>
+                        <span style={{ fontSize: '1.1rem' }}>▶ Start Navigation</span>
+                    </button>
+                </div>
+            )}
+
+            {!session.isLeader && destination && !isNavigating && (
                 <div className="top-overlay" style={{ display: 'flex', justifyContent: 'center', pointerEvents: 'none' }}>
                     <div className="glass-panel" style={{ display: 'flex', padding: '6px', borderRadius: '30px', pointerEvents: 'auto', background: 'rgba(15, 23, 42, 0.95)' }}>
-                        <button onClick={() => setViewMode('all')} style={{ padding: '8px 16px', borderRadius: '24px', fontSize: '0.85rem', fontWeight: 600, color: viewMode === 'all' ? '#fff' : 'var(--text-secondary)', background: viewMode === 'all' ? 'var(--accent-blue)' : 'transparent', transition: 'var(--transition-smooth)' }}>All</button>
-                        <button onClick={() => setViewMode('leader')} style={{ padding: '8px 16px', borderRadius: '24px', fontSize: '0.85rem', fontWeight: 600, color: viewMode === 'leader' ? '#fff' : 'var(--text-secondary)', background: viewMode === 'leader' ? 'var(--accent-blue)' : 'transparent', transition: 'var(--transition-smooth)' }}>Leader</button>
-                        <button onClick={() => setViewMode('destination')} style={{ padding: '8px 16px', borderRadius: '24px', fontSize: '0.85rem', fontWeight: 600, color: viewMode === 'destination' ? '#fff' : 'var(--text-secondary)', background: viewMode === 'destination' ? 'var(--accent-blue)' : 'transparent', transition: 'var(--transition-smooth)' }}>Dest</button>
+                        <p style={{ color: 'var(--text-secondary)', fontWeight: 600, padding: '4px 16px', margin: 0, fontSize: '0.9rem' }}>
+                            Waiting for Leader to start...
+                        </p>
                     </div>
                 </div>
             )}
@@ -312,7 +322,7 @@ export default function MapComponent({ session, onPeersUpdate }: MapComponentPro
                     attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
                 />
 
-                <RecenterAutomatically positions={getPositionsToTrack()} />
+                <NavigationCamera myPosition={myPosition} isNavigating={isNavigating} />
 
                 {/* Destination & Route */}
                 {destination && (
