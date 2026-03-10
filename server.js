@@ -42,8 +42,9 @@ app.prepare().then(() => {
 
     // Handle joining a group
     socket.on('join_group', (payload) => {
-      // payload can be string (legacy) or object { groupId, isLeader, name }
-      const groupId = typeof payload === 'string' ? payload : payload.groupId;
+      // payload can be string (legacy) or object { groupCode, isLeader, name }
+      // Front-end session object provides `groupCode`. Use `groupId` as fallback just in case.
+      const groupId = typeof payload === 'string' ? payload : (payload.groupCode || payload.groupId);
       const isLeader = typeof payload === 'object' ? payload.isLeader : false;
 
       // Validate session existence for non-leaders
