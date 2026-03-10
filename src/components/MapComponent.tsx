@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, useMap, Tooltip, Polyline } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, useMap, Tooltip, Polyline, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import { io, Socket } from 'socket.io-client';
 import DestinationSearch from './DestinationSearch';
@@ -29,17 +29,18 @@ interface MapComponentProps {
         isLeader: boolean;
     };
     onPeersUpdate?: (peers: Record<string, RiderData>) => void;
+    onLeave?: () => void;
 }
 
 // Google Maps-style navigation camera lock
-function NavigationCamera({ myPosition, isNavigating }: { myPosition: Position | null, isNavigating: boolean }) {
+function NavigationCamera({ myPosition, isNavigating, autoPan }: { myPosition: Position | null, isNavigating: boolean, autoPan: boolean }) {
     const map = useMap();
     useEffect(() => {
-        if (isNavigating && myPosition) {
+        if (isNavigating && myPosition && autoPan) {
             // Lock onto the exact position tightly when navigating
             map.flyTo([myPosition.lat, myPosition.lng], 18, { animate: true, duration: 0.5 });
         }
-    }, [myPosition, isNavigating, map]);
+    }, [myPosition, isNavigating, autoPan, map]);
 
     // Initial center on load if not navigating
     useEffect(() => {
@@ -52,7 +53,19 @@ function NavigationCamera({ myPosition, isNavigating }: { myPosition: Position |
     return null;
 }
 
-export default function MapComponent({ session, onPeersUpdate }: MapComponentProps) {
+// Track user drag/zoom to disable auto-pan
+function MapEventTracker({ onDrag }: { onDrag: () => void }) {
+    useMapEvents({
+        dragstart: onDrag,
+        zoomstart: () => {
+            // Let user zoom without snapping back immediately
+            onDrag();
+        }
+    });
+    return null;
+}
+
+export default function MapComponent({ session, onPeersUpdate, onLeave }: MapComponentProps) {
     const [socket, setSocket] = useState<Socket | null>(null);
     const [myPosition, setMyPosition] = useState<Position | null>(null);
     const [peers, setPeers] = useState<Record<string, RiderData>>({});
@@ -64,6 +77,8 @@ export default function MapComponent({ session, onPeersUpdate }: MapComponentPro
     // View state for Riders
     const [viewMode, setViewMode] = useState<'all' | 'leader' | 'destination'>('all');
     const [isNavigating, setIsNavigating] = useState(false);
+    const [autoPan, setAutoPan] = useState(true);
+    const [heading, setHeading] = useState(0);
 
     const geoWatchId = useRef<number | null>(null);
 
@@ -79,7 +94,18 @@ export default function MapComponent({ session, onPeersUpdate }: MapComponentPro
 
         newSocket.on('connect', () => {
             console.log("Socket connected:", newSocket.id);
-            newSocket.emit('join_group', session.groupCode);
+            // Send full session object so server knows if this is a leader joining
+            newSocket.emit('join_group', session);
+        });
+
+        newSocket.on('session_error', (msg: string) => {
+            alert(msg);
+            if (onLeave) onLeave();
+        });
+
+        newSocket.on('session_closed', (msg: string) => {
+            alert(msg);
+            if (onLeave) onLeave();
         });
 
         newSocket.on('location_updated', (data: RiderData) => {
@@ -100,7 +126,7 @@ export default function MapComponent({ session, onPeersUpdate }: MapComponentPro
         return () => {
             newSocket.disconnect();
         };
-    }, [session.groupCode]);
+    }, [session]);
 
     // Re-emit location when a new peer joins the group, so they see us immediately
     // even if our GPS hasn't moved.
@@ -125,6 +151,33 @@ export default function MapComponent({ session, onPeersUpdate }: MapComponentPro
             socket.off('peer_joined', handlePeerJoined);
         };
     }, [socket, myPosition, session]);
+
+    useEffect(() => {
+        const handleOrientation = (event: any) => {
+            let h = 0;
+            if (event.webkitCompassHeading) {
+                // iOS fallback
+                h = event.webkitCompassHeading;
+            } else if (event.alpha !== null) {
+                // Android/Standard absolute alpha
+                // Device orientation alpha is typical 0=North, increasing CCW
+                h = 360 - event.alpha;
+            }
+            setHeading(h);
+        };
+
+        if (typeof window !== 'undefined' && window.DeviceOrientationEvent) {
+            // Some devices need absolute listener
+            window.addEventListener('deviceorientationabsolute', handleOrientation as EventListener);
+            // General fallback
+            window.addEventListener('deviceorientation', handleOrientation as EventListener);
+        }
+
+        return () => {
+            window.removeEventListener('deviceorientationabsolute', handleOrientation as EventListener);
+            window.removeEventListener('deviceorientation', handleOrientation as EventListener);
+        };
+    }, []);
 
     useEffect(() => {
         if (!navigator.geolocation) {
@@ -249,6 +302,7 @@ export default function MapComponent({ session, onPeersUpdate }: MapComponentPro
 
     const handleStartNavigation = () => {
         setIsNavigating(true);
+        setAutoPan(true);
         if (socket && socket.connected) {
             socket.emit('start_navigation', session.groupCode);
         }
@@ -268,14 +322,21 @@ export default function MapComponent({ session, onPeersUpdate }: MapComponentPro
         return color;
     };
 
-    const createCustomIcon = (isLeader: boolean, name: string) => {
-        const colorStyle = !isLeader ? `style="--marker-color: ${getColorFromName(name)};"` : '';
+    const createCustomIcon = (isLeader: boolean, name: string, userHeading?: number) => {
+        const colorStyle = !isLeader ? `--marker-color: ${getColorFromName(name)};` : '';
+        const headingStyle = userHeading !== undefined ? `--heading: ${userHeading}deg;` : '--heading: 0deg;';
         return L.divIcon({
             className: 'custom-div-icon',
-            html: `<div class="arrow-marker ${isLeader ? 'leader-marker' : ''}" ${colorStyle}></div>`,
+            html: `<div class="arrow-marker ${isLeader ? 'leader-marker' : ''}" style="${colorStyle} ${headingStyle}"></div>`,
             iconSize: [24, 24],
             iconAnchor: [12, 12]
         });
+    };
+
+    const getCardinalDirection = (deg: number) => {
+        const val = Math.floor((deg / 22.5) + 0.5);
+        const arr = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
+        return arr[(val % 16)];
     };
 
     if (!myPosition) {
@@ -311,6 +372,16 @@ export default function MapComponent({ session, onPeersUpdate }: MapComponentPro
                 </div>
             )}
 
+            {isNavigating && !autoPan && (
+                <div className="top-overlay" style={{ display: 'flex', justifyContent: 'center', pointerEvents: 'none', top: '70px' }}>
+                    <button onClick={() => setAutoPan(true)} className="btn-primary" style={{ pointerEvents: 'auto', background: 'var(--bg-panel)', color: 'var(--accent-blue)', border: '1px solid var(--accent-blue)', boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}>
+                        <span style={{ fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            🎯 Recenter
+                        </span>
+                    </button>
+                </div>
+            )}
+
             <MapContainer
                 center={[myPosition.lat, myPosition.lng]}
                 zoom={16}
@@ -322,7 +393,11 @@ export default function MapComponent({ session, onPeersUpdate }: MapComponentPro
                     attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
                 />
 
-                <NavigationCamera myPosition={myPosition} isNavigating={isNavigating} />
+                <MapEventTracker onDrag={() => {
+                    if (isNavigating) setAutoPan(false);
+                }} />
+
+                <NavigationCamera myPosition={myPosition} isNavigating={isNavigating} autoPan={autoPan} />
 
                 {/* Destination & Route */}
                 {destination && (
@@ -337,9 +412,9 @@ export default function MapComponent({ session, onPeersUpdate }: MapComponentPro
                 )}
 
                 {/* My Marker */}
-                <Marker position={[myPosition.lat, myPosition.lng]} icon={createCustomIcon(session.isLeader, session.name)} zIndexOffset={1000}>
+                <Marker position={[myPosition.lat, myPosition.lng]} icon={createCustomIcon(session.isLeader, session.name, heading)} zIndexOffset={1000}>
                     <Tooltip direction="bottom" offset={[0, 12]} opacity={0.9} permanent>
-                        <span style={{ fontWeight: 'bold', color: 'var(--bg-primary)' }}>{session.name} (You) {session.isLeader ? '👑' : ''}</span>
+                        <span style={{ fontWeight: 'bold', color: 'var(--bg-primary)' }}>{session.name} (You) {session.isLeader ? '👑' : ''} ({getCardinalDirection(heading)})</span>
                     </Tooltip>
                     <Popup>
                         <div style={{ color: '#000', fontWeight: 'bold' }}>{session.name} (You) {session.isLeader ? '👑' : ''}</div>

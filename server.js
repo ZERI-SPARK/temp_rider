@@ -12,6 +12,8 @@ const connectedSockets = new Set();
 const groupDestinations = {};
 // Store navigation state per group: boolean
 const groupNavigationState = {};
+// Track active groups and their members/leaders to manage session lifecycle
+const activeGroups = {};
 const app = next({ dev, hostname, port: Number(port) });
 const handle = app.getRequestHandler();
 
@@ -39,22 +41,33 @@ app.prepare().then(() => {
     connectedSockets.add(socket.id);
 
     // Handle joining a group
-    socket.on('join_group', (groupId) => {
+    socket.on('join_group', (payload) => {
+      // payload can be string (legacy) or object { groupId, isLeader, name }
+      const groupId = typeof payload === 'string' ? payload : payload.groupId;
+      const isLeader = typeof payload === 'object' ? payload.isLeader : false;
+
+      // Validate session existence for non-leaders
+      if (!isLeader && !activeGroups[groupId]) {
+        socket.emit('session_error', 'Session expired or closed by the leader.');
+        return;
+      }
+
+      // Initialize group if leader creates it
+      if (isLeader) {
+        activeGroups[groupId] = { leaderId: socket.id, members: new Set([socket.id]) };
+      } else if (activeGroups[groupId]) {
+        activeGroups[groupId].members.add(socket.id);
+      }
+
       socket.join(groupId);
-      console.log(`Socket ${socket.id} joined group ${groupId}`);
+      console.log(`Socket ${socket.id} joined group ${groupId}. Role: ${isLeader ? 'Leader' : 'Rider'}`);
 
       // Alert existing members that a new peer joined, so they resync location
       socket.to(groupId).emit('peer_joined', socket.id);
 
-      // If the group already has an active destination, sync it to the new joiner immediately
-      if (groupDestinations[groupId]) {
-        socket.emit('destination_updated', groupDestinations[groupId]);
-      }
-
-      // If the group is already navigating, sync it
-      if (groupNavigationState[groupId]) {
-        socket.emit('navigation_started', true);
-      }
+      // If the group has an active destination/navigation, sync it
+      if (groupDestinations[groupId]) socket.emit('destination_updated', groupDestinations[groupId]);
+      if (groupNavigationState[groupId]) socket.emit('navigation_started', true);
     });
 
     // Handle location streaming
@@ -88,9 +101,29 @@ app.prepare().then(() => {
     socket.on('disconnect', () => {
       console.log('Client disconnected', socket.id);
       connectedSockets.delete(socket.id);
-      // Note: We don't automatically delete groupDestinations on disconnect
-      // because other users might still be in the group. We could clean them up
-      // if the group becomes truly empty.
+
+      // Find which group this socket belonged to and handle session teardown
+      for (const [groupId, groupData] of Object.entries(activeGroups)) {
+        if (groupData.members.has(socket.id)) {
+          groupData.members.delete(socket.id);
+
+          if (groupData.leaderId === socket.id) {
+            // Leader disconnected -> Destroy the entire session
+            console.log(`Leader left. Destroying session ${groupId}`);
+            socket.to(groupId).emit('session_closed', 'The leader has ended the session.');
+            io.socketsLeave(groupId); // Force everyone out of the socket.io room
+            delete activeGroups[groupId];
+            delete groupDestinations[groupId];
+            delete groupNavigationState[groupId];
+          } else if (groupData.members.size === 0) {
+            // Group is completely empty -> Cleanup
+            console.log(`Session ${groupId} is empty. Cleaning up.`);
+            delete activeGroups[groupId];
+            delete groupDestinations[groupId];
+            delete groupNavigationState[groupId];
+          }
+        }
+      }
     });
   });
 

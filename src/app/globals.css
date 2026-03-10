@@ -193,13 +193,14 @@ input {
   position: absolute;
   top: 50%;
   left: 50%;
-  transform: translate(-50%, -50%) rotate(-45deg);
+  transform: translate(-50%, -50%) rotate(calc(-45deg + var(--heading, 0deg)));
   width: 0;
   height: 0;
   border-left: 12px solid transparent;
   border-right: 12px solid transparent;
   border-bottom: 24px solid var(--marker-color, var(--accent-blue));
   z-index: 2;
+  transition: transform 0.2s linear;
 }
 
 /* A subtle pulse behind the arrow */

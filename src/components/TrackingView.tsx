@@ -29,7 +29,7 @@ export default function TrackingView({ session, onLeave }: TrackingViewProps) {
 
     return (
         <div style={{ width: '100%', height: '100%', position: 'relative' }}>
-            <MapComponent session={session} onPeersUpdate={setPeers} />
+            <MapComponent session={session} onPeersUpdate={setPeers} onLeave={onLeave} />
             <Dashboard session={session} onLeave={onLeave} peers={peers} />
         </div>
     );
